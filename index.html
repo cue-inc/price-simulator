@@ -197,6 +197,11 @@
   .off-tag { background: var(--off-soft); color: var(--off); font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
   .slot-price b { font-size: 15px; }
   .sp-tag { background: var(--off); color: #fff; font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+  /* 学割：他の割引と区別して目立たせる */
+  .stu-tag { background: #0f7bd8; color: #fff; font-weight: 800; font-size: 11px; padding: 1px 8px; border-radius: 999px; }
+  .rows .stu-lbl { color: #0f7bd8; font-weight: 800; }
+  .dtog.stu { border-color: #0f7bd8; background: #e6f2fd; color: #0f7bd8; }
+  .dtog.stu.off { border: 1px dashed var(--border); background: var(--surface); color: var(--muted); }
   .rows .sp-lbl { color: var(--off); font-weight: 700; }
   .toggle.sp .pct::before { content: "★ "; }
 
@@ -416,9 +421,11 @@
 </main>
 
 <ul class="note">
-  <li>金額は価格表（価格表 (7).xlsx）の「金額」を定価として、選択した割引を適用しています（1円未満切り捨て）。新規・追加タブには、A列「使用用途」に応じたプランを表示しています。</li>
+  <li>金額は価格表（価格表 (7).xlsx）の「金額」を定価として、選択した割引を適用しています（1円未満は、当日割引・追加割引は四捨五入、特別割引は0.1円以上を繰り上げ）。新規・追加タブには、A列「使用用途」に応じたプランを表示しています。</li>
   <li class="staff" data-for="new">OPEN記念特別割（新規のみ）は「12回以上」かつ「セットプラン（ALL、またはかっこの外に ＋ を含む）」が対象で、当日裁量割引後の金額からさらに10%／15%／20%OFFします。</li>
   <li class="staff" data-for="add">追加プランの割引は、各カードの「割引 ▾」を開くと、プランごとに 10%OFF／20%OFF を設定できます（もう一度押すと解除）。アフター保証は「保証 50%／80%／90%OFF」から選択、セレクト脱毛（追加CP）は割引不可です。24回が無いプランは「12回の定価 × 2」を24回の定価として表示しています。</li>
+  <li class="staff" data-for="new">🎓学割（新規のみ）：セットプランの9回・12回・24回で「回数割引（9回15%・12回20%・24回20%）→ さらに20%OFF」（6回は対象外）。当日裁量割引・OPEN記念特別割とは併用できません。</li>
+  <li class="staff" data-for="new">セットプランの6回は、当日裁量割引10%のみ使えます（15%・20%は表示されず、全体で15%・20%を選んでも10%になります）。</li>
   <li class="staff" data-for="new">単パーツは割引（当日裁量割引・OPEN記念特別割）の対象外です。</li>
   <li class="staff" data-for="new">割引は上部の「当日裁量割引」で全体に一括適用、各カードの「割引 ▾」を開くとプランごとに個別適用できます（全体を切り替えると個別設定はリセットされます）。</li>
   <li>分割払いは概算です（最大50回）。頭金は分割手数料の対象外です。実際のお支払額は信販会社の計算により異なる場合があります。</li>
@@ -609,8 +616,14 @@ const ADD_DISCOUNT_GROUPS = {
    ※「全身(上半身+下半身)」のように、かっこ内の「+」だけのプランはセットプランではないため対象外 */
 const SPECIAL_RATES = [0.1, 0.15, 0.2]; // 特別10%／特別15%／特別20%
 const SPECIAL_MIN_COUNT = 12;
-const isSpecialEligible = (planKey, count) =>
-  count >= SPECIAL_MIN_COUNT && /ALL|[+＋]/.test(planKey.replace(/[（(][^）)]*[）)]/g, ""));
+const isSetPlan = planKey => /ALL|[+＋]/.test(planKey.replace(/[（(][^）)]*[）)]/g, ""));
+const isSpecialEligible = (planKey, count) => count >= SPECIAL_MIN_COUNT && isSetPlan(planKey);
+
+/* 学割（新規のみ）：セットプランの9回以上で「回数に応じた割引 → さらに20%OFF」（6回は対象外）。当日裁量割引・特別割とは併用不可
+   端数処理は当日割引→特別割と同じ（回数割引は四捨五入、20%は0.1円以上繰り上げ） */
+const STUDENT_COUNT_RATES = { 9: 0.15, 12: 0.2, 24: 0.2 };
+const STUDENT_EXTRA_RATE = 0.2;
+const isStudentEligible = (planKey, count) => isSetPlan(planKey) && STUDENT_COUNT_RATES[count] !== undefined;
 
 /* 分割払い */
 const MAX_MONTHS = 50;
@@ -713,7 +726,7 @@ function defaultState() {
 /* variant：同じ回数で金額が複数あるプラン（ヒゲ脱毛3部位 3回の ¥7,800／¥3,300）の何番目の金額か */
 /* transfer / special：新規タブのプランごとの当日裁量割引・特別割の率（null＝上部の全体設定に従う） */
 /* addRate：追加タブのプランごとの割引率（0＝なし） */
-function slot(plan, count) { return { plan, count, variant: 0, transfer: null, special: null, addRate: 0 }; }
+function slot(plan, count) { return { plan, count, variant: 0, transfer: null, special: null, addRate: 0, student: false }; }
 function emptySlot() { return slot("", null); }
 /* bonus：新規タブの3回特典のプラン名（""＝なし）。割引は新規・追加ともプランごと（slot の transfer / special / addRate） */
 function newPattern(slots) {
@@ -725,21 +738,38 @@ let state = defaultState();
 const yen = n => "¥" + Math.round(n).toLocaleString("ja-JP");
 
 /* 新規：プランごとの割引率（プランの個別設定があれば優先、なければ上部の全体設定） */
-const slotTransfer = s => s.transfer ?? state.transfer;
+/* セットプランの6回は当日裁量割引10%まで（15%／20%は使えない。全体で15%・20%を選んでいても10%にとどめる） */
+const SET_6_MAX_TRANSFER = 0.1;
+const isSet6 = s => isSetPlan(s.plan) && s.count === 6;
+const transferRatesFor = s => isSet6(s) ? TRANSFER_RATES.filter(r => r <= SET_6_MAX_TRANSFER) : TRANSFER_RATES;
+const slotTransfer = s => {
+  const r = s.transfer ?? state.transfer;
+  return isSet6(s) ? Math.min(r, SET_6_MAX_TRANSFER) : r;
+};
 const slotSpecial = s => isSpecialEligible(s.plan, s.count) ? (s.special ?? state.special) : 0;
 /* 追加：プランの割引グループ（normal＝10%/20%、af＝アフター保証 50/80/90%、null＝割引不可の追加CP） */
 const discGroupOf = planKey => {
   const plan = PLANS.get(planKey);
   return plan ? Object.keys(ADD_DISCOUNT_GROUPS).find(g => ADD_DISCOUNT_GROUPS[g].applies(plan.category)) ?? null : null;
 };
-/* プランの割引率：新規＝当日裁量割引（回数に関係なく同率）、追加＝プランごとに選んだ率 */
+/* 学割を使っているプランか（新規のみ。対象外の回数・プランに切り替えたら自動で外れる） */
+const slotStudent = s => state.tab === "new" && !!s.student && isStudentEligible(s.plan, s.count);
+/* プランの割引率：新規＝学割なら回数別の率、そうでなければ当日裁量割引（回数に関係なく同率）、追加＝プランごとに選んだ率 */
 const slotRate = (pat, s) => state.tab === "add"
   ? (discGroupOf(s.plan) ? s.addRate || 0 : 0)
   : isPart(s.plan) ? 0 // 単パーツは割引不可
+  : slotStudent(s) ? STUDENT_COUNT_RATES[s.count]
   : slotTransfer(s);
 
-/* 割引後の金額（1円未満切り捨て）。0.8 などの小数誤差で1円ずれないよう、整数の%で計算 */
-const applyDiscount = (price, rate) => Math.floor(price * (100 - Math.round(rate * 100)) / 100);
+/* 割引後の金額。0.8 などの小数誤差でずれないよう、整数の%（price × (100−%) の整数）で計算
+   ・当日割引／追加タブの割引：1円未満を四捨五入
+   ・特別割引（当日割引の後にかける）：1円未満が 0.1円以上なら繰り上げ、0.1円未満は切り捨て */
+const pctInt = rate => Math.round(rate * 100);
+const applyDiscount = (price, rate) => Math.round(price * (100 - pctInt(rate)) / 100);
+function applySpecialDiscount(price, rate) {
+  const n = price * (100 - pctInt(rate)); // 割引後の金額 × 100（整数）
+  return Math.floor(n / 100) + (n % 100 >= 10 ? 1 : 0);
+}
 
 /* 単パーツは1つの枠で複数部位を選べる（s.parts：選んだ部位のプラン名。回数は共通） */
 const isPart = key => PLANS.get(key)?.category === "単パーツ";
@@ -750,7 +780,9 @@ function priceOf(pat, s) {
   const plan = PLANS.get(s.plan);
   if (!plan) return null;
   const rate = slotRate(pat, s);
-  const special = state.tab === "new" ? slotSpecial(s) : 0; // 特別割の率（新規のみ）
+  const student = slotStudent(s);
+  // 2段目の割引：学割なら +20%、そうでなければ特別割の率（どちらも新規のみ）
+  const special = student ? STUDENT_EXTRA_RATE : state.tab === "new" ? slotSpecial(s) : 0;
   let list = 0, afterCount = 0, discounted = 0;
   for (const key of slotKeys(s)) {
     const variants = variantsOf(PLANS.get(key), s.count);
@@ -759,9 +791,9 @@ function priceOf(pat, s) {
     const after = applyDiscount(opt.price, rate);
     list += opt.price;
     afterCount += after;
-    discounted += applyDiscount(after, special);
+    discounted += applySpecialDiscount(after, special);
   }
-  return { list, rate, afterCount, special, discounted };
+  return { list, rate, afterCount, special, student, discounted };
 }
 
 /* 分割の計算方式（画面の表記・単位） */
@@ -857,6 +889,7 @@ function buildCards() {
         <div class="rows num">
           <span class="lbl">定価合計</span><span class="val" data-role="list"></span>
           <span class="lbl" data-role="discRow">${state.tab === "add" ? "割引" : "当日割引"}</span><!-- お客様向けの表記（スタッフ用の名称は「当日裁量割引」） --><span class="val minus" data-role="discRow"><span data-role="disc"></span></span>
+          <span class="lbl stu-lbl" data-role="stuRow">🎓 学割</span><span class="val minus" data-role="stuRow"><span data-role="stuDisc"></span></span>
           <span class="lbl sp-lbl" data-role="spRow">特別割引</span><!-- お客様向けの表記（スタッフ用の名称は「OPEN記念特別割」） --><span class="val minus" data-role="spRow"><span data-role="spDisc"></span></span>
           <span class="lbl bonus-lbl" data-role="bonusRow"><span data-role="bonusLbl"></span></span><span class="val bonus-lbl" data-role="bonusRow">¥0</span>
         </div>
@@ -948,10 +981,11 @@ function buildCards() {
       });
       // このプランだけの割引（同じボタンをもう一度押すと解除）
       slotEl.querySelector('[data-role=sdisc]').addEventListener("click", e => {
-        const btn = e.target.closest("[data-st], [data-ss], [data-sa]");
+        const btn = e.target.closest("[data-st], [data-ss], [data-sa], [data-sd]");
         if (!btn) return;
         const s = pat.slots[i];
-        if (btn.dataset.st) { const r = +btn.dataset.st; s.transfer = slotTransfer(s) === r ? 0 : r; }      // 新規：当日裁量割引
+        if (btn.dataset.sd) s.student = !slotStudent(s);                                                       // 新規：学割（他の割引と併用不可）
+        else if (btn.dataset.st) { const r = +btn.dataset.st; s.transfer = slotTransfer(s) === r ? 0 : r; }      // 新規：当日裁量割引
         else if (btn.dataset.ss) { const r = +btn.dataset.ss; s.special = slotSpecial(s) === r ? 0 : r; } // 新規：特別割
         else { const r = +btn.dataset.sa; s.addRate = s.addRate === r ? 0 : r; }                          // 追加
         updateCard(tier);
@@ -1015,13 +1049,16 @@ const bonusOf = pat => bonusEligible(pat) ? BONUS_PLANS.find(b => b.key === pat.
 
 function patternTotals(tier) {
   const pat = state.patterns[tier];
-  let list = 0, afterCount = 0, total = 0, n = 0;
+  let list = 0, countDisc = 0, specialDisc = 0, studentDisc = 0, total = 0, n = 0;
   for (const s of pat.slots) {
     const p = priceOf(pat, s);
     if (!p) continue;
-    list += p.list; afterCount += p.afterCount; total += p.discounted; n++;
+    list += p.list; total += p.discounted; n++;
+    // 学割は他の割引と区別して1行にまとめて表示
+    if (p.student) studentDisc += p.list - p.discounted;
+    else { countDisc += p.list - p.afterCount; specialDisc += p.afterCount - p.discounted; }
   }
-  return { list, countDisc: list - afterCount, specialDisc: afterCount - total, bonus: bonusOf(pat), total, n }; // 特典は¥0のため合計に影響しない
+  return { list, countDisc, specialDisc, studentDisc, bonus: bonusOf(pat), total, n }; // 特典は¥0のため合計に影響しない
 }
 
 function updateCard(tier) {
@@ -1063,24 +1100,29 @@ function updateCard(tier) {
       : "";
 
     const p = priceOf(pat, s);
-    slotEl.querySelector('[data-role=price]').innerHTML = p
-      ? (p.rate || p.special
-          ? `<span class="strike">${yen(p.list)}</span>`
-            + (p.rate ? `<span class="off-tag">${Math.round(p.rate * 100)}%OFF</span>` : "")
-            + (p.special ? `<span class="sp-tag">特別${Math.round(p.special * 100)}%OFF</span>` : "")
-            + `<b>${yen(p.discounted)}</b>`
-          : `<b>${yen(p.list)}</b>`)
-      : "";
+    const pct = r => Math.round(r * 100);
+    slotEl.querySelector('[data-role=price]').innerHTML = !p ? ""
+      : p.student
+        ? `<span class="strike">${yen(p.list)}</span><span class="stu-tag">🎓学割 ${pct(p.rate)}%+${pct(p.special)}%OFF</span><b>${yen(p.discounted)}</b>`
+      : (p.rate || p.special)
+        ? `<span class="strike">${yen(p.list)}</span>`
+          + (p.rate ? `<span class="off-tag">${pct(p.rate)}%OFF</span>` : "")
+          + (p.special ? `<span class="sp-tag">特別${pct(p.special)}%OFF</span>` : "")
+          + `<b>${yen(p.discounted)}</b>`
+        : `<b>${yen(p.list)}</b>`;
 
     // このプランの割引ボタン
-    //   新規：当日裁量割引＋特別割（単パーツは割引不可。特別割は対象プランのみ）
+    //   新規：学割（セットプランのみ）、当日裁量割引＋特別割（学割中は併用不可のため出さない。単パーツは割引不可）
     //   追加：プランのグループの率（通常 10%/20%、アフター保証 50/80/90%。セレクト脱毛など追加CPは割引不可）
-    const pct = r => Math.round(r * 100);
     const group = state.tab === "add" ? discGroupOf(s.plan) : null;
+    const studentBtn = isStudentEligible(s.plan, s.count)
+      ? `<button class="dtog stu ${slotStudent(s) ? "" : "off"}" data-sd="1">🎓学割</button>` : "";
     slotEl.querySelector('[data-role=sdisc]').innerHTML = !plan ? ""
       : state.tab === "new"
         ? (isPart(s.plan) ? ""
-          : TRANSFER_RATES.map(r => `<button class="dtog ${slotTransfer(s) === r ? "" : "off"}" data-st="${r}">${pct(r)}%OFF</button>`).join("")
+          : slotStudent(s) ? studentBtn
+          : studentBtn
+            + transferRatesFor(s).map(r => `<button class="dtog ${slotTransfer(s) === r ? "" : "off"}" data-st="${r}">${pct(r)}%OFF</button>`).join("")
             + (isSpecialEligible(s.plan, s.count)
               ? SPECIAL_RATES.map(r => `<button class="dtog ${slotSpecial(s) === r ? "" : "off"}" data-ss="${r}">特別${pct(r)}%</button>`).join("")
               : ""))
@@ -1096,6 +1138,8 @@ function updateCard(tier) {
   // 割引の行は、割引を使ったときだけ表示
   card.querySelectorAll('[data-role=discRow]').forEach(el => el.hidden = !t.countDisc);
   card.querySelector('[data-role=disc]').textContent = "−" + yen(t.countDisc);
+  card.querySelectorAll('[data-role=stuRow]').forEach(el => el.hidden = !t.studentDisc);
+  card.querySelector('[data-role=stuDisc]').textContent = "−" + yen(t.studentDisc);
   card.querySelectorAll('[data-role=spRow]').forEach(el => el.hidden = !t.specialDisc);
   card.querySelector('[data-role=spDisc]').textContent = "−" + yen(t.specialDisc);
   card.querySelectorAll('[data-role=bonusRow]').forEach(el => el.hidden = !t.bonus);
