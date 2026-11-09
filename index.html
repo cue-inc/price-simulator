@@ -261,6 +261,19 @@
   .field input[type=number] { width: 120px; font-size: 16px; font-weight: 700; text-align: right; }
   .field .unit { font-weight: 700; }
   .field .hint, .inst-input .hint { font-size: 11px; color: var(--muted); }
+  /* ボーナス併用払い */
+  .mini-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .mini-seg button { border: 0; background: transparent; padding: 5px 12px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; color: var(--text); }
+  .mini-seg button + button { border-left: 1px solid var(--border); }
+  .mini-seg button.active { background: var(--accent); color: #fff; }
+  .mini-seg button:disabled { opacity: .4; cursor: not-allowed; }
+  .bonus-box { margin-top: 8px; padding: 10px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+  .bonus-box .field + .field { margin-top: 6px; }
+  .bonus-line { margin-top: 6px; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .bonus-line .lbl { font-weight: 700; font-size: 12px; }
+  .bonus-line .val { font-size: 18px; font-weight: 800; }
+  .bonus-line .val small { font-size: 12px; margin-left: 2px; font-weight: 700; }
+  .inst-rows .sep { grid-column: 1 / -1; border-top: 1px dashed var(--border); margin: 4px 0; }
 
   /* カードごとの割引ON/OFF（スタッフ用）：「プラン選択（最大3つ）」の右 */
   .section-head { display: flex; align-items: center; justify-content: space-between; gap: 6px 8px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -430,6 +443,7 @@
   <li class="staff" data-for="new">割引は上部の「当日裁量割引」で全体に一括適用、各カードの「割引 ▾」を開くとプランごとに個別適用できます（全体を切り替えると個別設定はリセットされます）。</li>
   <li>分割払いは概算です（最大50回）。頭金は分割手数料の対象外です。実際のお支払額は信販会社の計算により異なる場合があります。</li>
   <li class="staff">計算方式：アドオン方式＝分割手数料は「分割元金 × 月あたり料率 × 回数」。年利方式＝元利均等返済・実質年率で計算。</li>
+  <li class="staff">ボーナス併用（アドオン方式＝弊社の口座振替のみ）：夏（6・7・8月）と冬（12・1月）に1回ずつ加算（1,000円単位）。ボーナス加算金合計は頭金を除いた金額の50%未満まで。初回お支払日は2か月後の6日です。</li>
 </ul>
 
 <script>
@@ -629,6 +643,7 @@ const isStudentEligible = (planKey, count) => isSetPlan(planKey) && STUDENT_COUN
 const MAX_MONTHS = 50;
 const DEFAULT_MONTHS = 36;
 const DEFAULT_DOWN = 10000; // 頭金の初期値
+const DEFAULT_BONUS = 20000; // ボーナス加算金の初期値
 
 /* ===== タブ（新規／追加）ごとに、プランを「プラン名 × 回数」に整理 ===== */
 const TABS = {
@@ -730,7 +745,11 @@ function slot(plan, count) { return { plan, count, variant: 0, transfer: null, s
 function emptySlot() { return slot("", null); }
 /* bonus：新規タブの3回特典のプラン名（""＝なし）。割引は新規・追加ともプランごと（slot の transfer / special / addRate） */
 function newPattern(slots) {
-  return { slots, months: DEFAULT_MONTHS, down: DEFAULT_DOWN, bonus: "" };
+  return {
+    slots, months: DEFAULT_MONTHS, down: DEFAULT_DOWN, bonus: "",
+    // ボーナス併用払い（分割払い）
+    bonusPay: false, summer: 6, winter: 12, bonusAmount: DEFAULT_BONUS,
+  };
 }
 let state = defaultState();
 
@@ -803,12 +822,31 @@ const CALC_MODES = {
 };
 const rateLabel = () => `${CALC_MODES[state.calc].label} ${state.rates[state.calc]}${CALC_MODES[state.calc].unit}`;
 
-function installment(principal, months) {
+/* ボーナス併用払い（アドオン方式＝弊社の口座振替のみ）
+   ・夏（6/7/8月）と冬（12/1月）に1回ずつ、加算金を上乗せ（1,000円単位）
+   ・ボーナス加算金合計は、頭金を除いた分割元金の50%未満まで
+   ・初回お支払日は今日から2か月後の6日。ボーナス回数は初回〜最終回の間にある夏・冬の月の数 */
+const BONUS_SUMMER_MONTHS = [6, 7, 8];
+const BONUS_WINTER_MONTHS = [12, 1];
+const BONUS_UNIT = 1000;
+const BONUS_MAX_RATIO = 0.5;
+const FIRST_PAY_DAY = 6;
+const MIN_MONTHLY = 1000; // 月々のお支払は1,000円以上
+
+/* 初回お支払日（今日から2か月後の6日）と、k回目（1始まり）のお支払年月 */
+function firstPayDate() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth() + 2, FIRST_PAY_DAY);
+}
+const payMonthOf = (first, k) => new Date(first.getFullYear(), first.getMonth() + k - 1, 1);
+const ymLabel = d => `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(2, "0")}月`;
+
+function installment(principal, months, bonus) {
   if (!principal || !months || months < 1) return null;
   const rate = state.rates[state.calc] / 100;
   let fee;
   if (state.calc === "addon") {
-    // アドオン方式：手数料 = 元金 × 月あたり料率 × 回数（1円未満切り捨て）
+    // アドオン方式：手数料 = 元金 × 月あたり料率 × 回数（1円未満切り捨て）。ボーナスの有無で手数料は変わらない
     fee = Math.floor(principal * rate * months);
   } else {
     // 年利方式（元利均等返済）：月額 = P × r / (1 − (1 + r)^−n)、r = 年利 / 12
@@ -817,10 +855,29 @@ function installment(principal, months) {
     fee = Math.round(m * months) - principal;
   }
   const total = principal + fee;
-  // 2回目以降は100円未満切り捨て（下2桁0）、端数は初回に加算
-  const monthly = months > 1 ? Math.floor(total / months / 100) * 100 : total;
-  const first = total - monthly * (months - 1);
-  return { first, monthly, total, fee };
+
+  // ボーナス月：初回〜最終回の間にある夏・冬の月
+  const first = firstPayDate();
+  let bonusCount = 0, bonusFirst = null;
+  if (bonus) {
+    for (let k = 1; k <= months; k++) {
+      const m = payMonthOf(first, k).getMonth() + 1;
+      if (m === bonus.summer || m === bonus.winter) {
+        bonusCount++;
+        bonusFirst ??= payMonthOf(first, k);
+      }
+    }
+  }
+  const bonusTotal = bonus ? bonus.amount * bonusCount : 0;
+
+  // ボーナス分を除いた金額を回数で割り、2回目以降は100円未満切り捨て（下2桁0）、端数は初回に加算
+  const base = total - bonusTotal;
+  const monthly = months > 1 ? Math.floor(base / months / 100) * 100 : base;
+  const firstAmount = base - monthly * (months - 1);
+  return {
+    first: firstAmount, monthly, total, fee, bonusCount, bonusTotal, bonusFirst,
+    firstDate: first, lastMonth: payMonthOf(first, months),
+  };
 }
 
 /* ===== 描画 ===== */
@@ -911,6 +968,26 @@ function buildCards() {
           <span class="field-lbl">頭金</span>
           <input type="number" min="0" step="1000" class="num" data-role="down" inputmode="numeric"><span class="unit">円</span>
           <span class="hint">手数料対象外</span>
+        </div>
+        <div class="field" data-role="bonusPayRow">
+          <span class="field-lbl">ボーナス</span>
+          <div class="mini-seg" data-role="bonusPay"><button data-v="0">無</button><button data-v="1">有</button></div>
+          <span class="hint" data-role="bonusPayHint"></span>
+        </div>
+        <div class="bonus-box" data-role="bonusBox" hidden>
+          <div class="field">
+            <span class="field-lbl">夏</span>
+            <div class="mini-seg" data-role="summer">${BONUS_SUMMER_MONTHS.map(m => `<button data-m="${m}">${m}月</button>`).join("")}</div>
+          </div>
+          <div class="field">
+            <span class="field-lbl">冬</span>
+            <div class="mini-seg" data-role="winter">${BONUS_WINTER_MONTHS.map(m => `<button data-m="${m}">${m}月</button>`).join("")}</div>
+          </div>
+          <div class="field">
+            <span class="field-lbl">加算金</span>
+            <input type="number" min="0" step="${BONUS_UNIT}" class="num" data-role="bonusAmount" inputmode="numeric"><span class="unit">円</span>
+            <span class="hint">1,000円単位</span>
+          </div>
         </div>
         <div data-role="inst"></div>
         </div>
@@ -1022,6 +1099,29 @@ function buildCards() {
       pat.down = Number.isFinite(v) && v > 0 ? v : 0;
       updateInstallment(tier);
     });
+
+    // ボーナス併用払い（有／無、夏・冬の月、加算金）
+    card.querySelector('[data-role=bonusPay]').addEventListener("click", e => {
+      const b = e.target.closest("[data-v]");
+      if (!b || b.disabled) return;
+      pat.bonusPay = b.dataset.v === "1";
+      updateInstallment(tier);
+    });
+    card.querySelector('[data-role=summer]').addEventListener("click", e => {
+      const b = e.target.closest("[data-m]");
+      if (b) { pat.summer = +b.dataset.m; updateInstallment(tier); }
+    });
+    card.querySelector('[data-role=winter]').addEventListener("click", e => {
+      const b = e.target.closest("[data-m]");
+      if (b) { pat.winter = +b.dataset.m; updateInstallment(tier); }
+    });
+    const bonusInput = card.querySelector('[data-role=bonusAmount]');
+    bonusInput.addEventListener("input", () => {
+      const v = parseInt(bonusInput.value, 10);
+      pat.bonusAmount = Number.isFinite(v) && v > 0 ? Math.round(v / BONUS_UNIT) * BONUS_UNIT : 0;
+      updateInstallment(tier);
+    });
+    bonusInput.addEventListener("change", () => { bonusInput.value = pat.bonusAmount || ""; }); // 確定時に1,000円単位へ丸めて表示
 
     card.querySelector('[data-role=instToggle]').addEventListener("click", () => {
       setInstOpen(!state.instOpen);
@@ -1179,6 +1279,19 @@ function updateInstallment(tier) {
   };
   sync("down", pat.down || "");
 
+  // ボーナス併用払い：アドオン方式（弊社の口座振替）のときだけ設定できる
+  const bonusAllowed = state.calc === "addon";
+  const bonusOn = bonusAllowed && pat.bonusPay;
+  card.querySelectorAll('[data-role=bonusPay] [data-v]').forEach(b => {
+    b.classList.toggle("active", (b.dataset.v === "1") === bonusOn);
+    b.disabled = !bonusAllowed && b.dataset.v === "1";
+  });
+  card.querySelector('[data-role=bonusPayHint]').textContent = bonusAllowed ? "" : "アドオン方式のみ";
+  card.querySelector('[data-role=bonusBox]').hidden = !bonusOn;
+  card.querySelectorAll('[data-role=summer] [data-m]').forEach(b => b.classList.toggle("active", +b.dataset.m === pat.summer));
+  card.querySelectorAll('[data-role=winter] [data-m]').forEach(b => b.classList.toggle("active", +b.dataset.m === pat.winter));
+  sync("bonusAmount", pat.bonusAmount || "");
+
   const { total } = patternTotals(tier);
   const el = card.querySelector('[data-role=inst]');
   if (!total) { el.innerHTML = `<div class="empty-msg">プランを選択すると月々の金額を表示します</div>`; return; }
@@ -1189,16 +1302,47 @@ function updateInstallment(tier) {
   const principal = total - down;
   if (!principal) { el.innerHTML = `<div class="warn-msg">頭金でお支払総額の全額をお支払いいただく設定です</div>`; return; }
 
-  const inst = installment(principal, pat.months);
+  const bonus = bonusOn && pat.bonusAmount > 0 ? { amount: pat.bonusAmount, summer: pat.summer, winter: pat.winter } : null;
+  const inst = installment(principal, pat.months, bonus);
+  if (bonus) {
+    // ボーナス加算金合計は、頭金を除いた分割元金の50%未満まで
+    const limit = principal * BONUS_MAX_RATIO;
+    if (!inst.bonusCount) {
+      el.innerHTML = `<div class="warn-msg">お支払期間（${ymLabel(inst.firstDate)}〜${ymLabel(inst.lastMonth)}）にボーナス月（${pat.summer}月・${pat.winter}月）がありません。回数を見直してください</div>`;
+      return;
+    }
+    if (inst.bonusTotal >= limit) {
+      const maxAmount = Math.ceil(limit / inst.bonusCount / BONUS_UNIT) * BONUS_UNIT - BONUS_UNIT;
+      el.innerHTML = `<div class="warn-msg">ボーナス加算金額合計はクレジット残金の50%以下にして下さい<br>`
+        + `<small>加算金合計 ${yen(inst.bonusTotal)}（${inst.bonusCount}回）／クレジット残金 ${yen(principal)}。加算金は ${yen(Math.max(maxAmount, 0))} 以下にしてください</small></div>`;
+      return;
+    }
+  }
+  // 月々のお支払は1,000円以上（ボーナス併用で月々が少なくなりすぎる場合も含む）
+  if (pat.months > 1 && inst.monthly < MIN_MONTHLY) {
+    el.innerHTML = `<div class="warn-msg">月々のお支払が${yen(MIN_MONTHLY)}以上になる様に、${bonus ? "ボーナス加算金か" : ""}支払回数を見直して下さい<br>`
+      + `<small>現在の月々（2回目以降）：${yen(Math.max(inst.monthly, 0))}</small></div>`;
+    return;
+  }
+  const showDates = state.calc === "addon"; // 初回お支払日（2か月後の6日）は口座振替＝アドオン方式のルール
   el.innerHTML = `
     <div class="monthly"><span class="lbl">${pat.months > 1 ? "月々<small>（2回目以降）</small>" : "お支払い"}</span><span class="val num">${yen(inst.monthly)}<small>× ${Math.max(pat.months - 1, 1)}回</small></span></div>
+    ${bonus ? `
+    <div class="bonus-line num"><span class="lbl">ボーナス月（${pat.summer}月・${pat.winter}月）は ＋${yen(bonus.amount)}</span>
+      <span class="val">${yen(inst.monthly + bonus.amount)}<small>× ${inst.bonusCount}回</small></span></div>` : ""}
     <div class="rows inst-rows num">
       ${pat.months > 1 ? `<span class="lbl">初回お支払い</span><span class="val"><b>${yen(inst.first)}</b></span>` : ""}
-      ${down ? `<span class="lbl">頭金</span><span class="val">${yen(down)}</span>
-      <span class="lbl">分割元金</span><span class="val">${yen(principal)}</span>` : ""}
+      ${down ? `<span class="lbl">頭金</span><span class="val">${yen(down)}</span>` : ""}
+      <span class="lbl">クレジット残金</span><span class="val">${yen(principal)}</span>
       <span class="lbl">分割手数料</span><span class="val">${yen(inst.fee)}</span>
-      <span class="lbl">分割支払総額</span><span class="val"><b>${yen(inst.total)}</b></span>
+      <span class="lbl">分割支払金合計</span><span class="val"><b>${yen(inst.total)}</b></span>
       ${down ? `<span class="lbl">お支払総額（頭金込み）</span><span class="val"><b>${yen(down + inst.total)}</b></span>` : ""}
+      ${bonus ? `<span class="lbl">ボーナス支払回数</span><span class="val">${inst.bonusCount}回</span>
+      <span class="lbl">ボーナス加算金合計</span><span class="val">${yen(inst.bonusTotal)}</span>` : ""}
+      ${showDates ? `<span class="sep"></span>
+      <span class="lbl">初回お支払日</span><span class="val">${ymLabel(inst.firstDate)}${String(FIRST_PAY_DAY).padStart(2, "0")}日</span>
+      <span class="lbl">最終回お支払</span><span class="val">${ymLabel(inst.lastMonth)}</span>
+      ${bonus ? `<span class="lbl">ボーナス初回お支払</span><span class="val">${ymLabel(inst.bonusFirst)}</span>` : ""}` : ""}
     </div>`;
 }
 
